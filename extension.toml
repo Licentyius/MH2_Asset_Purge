@@ -1,0 +1,13 @@
+[extension]
+id = "mh2_asset_purge"
+name = "Asset Purge"
+version = "1.0.0"
+author = "Elvaerwyn_MH2"
+description = "Deletes unwanted or unused assets."
+
+[runtime]
+package_dirs = ["."]
+sys_paths = ["."]
+
+[project.entry-points]
+"makehuman2.extension" = "mh2_official_tools.mh2_asset_purge:initialize_extension"
