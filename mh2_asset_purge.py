@@ -1,11 +1,11 @@
 ##############
 #  Asset Inventory & Asset Purger V1.0 
 #  Official Core Tool Module by Elvaerwyn_MH2 for MakeHuman 2 
+#  changes for linux and baseclass dedicated behaviour  by punkduck
 ##############
 
 import os
 import gc
-import shutil
 from send2trash import send2trash
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -23,8 +23,9 @@ class MH2AssetPurgerPanel(QWidget):
         super().__init__(parent)
         self.mh_app = mh_app
         self.mh_glob = mh_glob
-        self.installed_assets_cache = []
+        self.installed_assets_cache = {}
         self.setObjectName("MH2AssetPurgerPanel")
+        self.categories = []
         
         self.setup_ui()
         self.sync_installed_to_cart()
@@ -64,36 +65,28 @@ class MH2AssetPurgerPanel(QWidget):
         layout.addLayout(btn_layout)
 
     def sync_installed_to_cart(self):
+        """
+        sync_installed_to_cart creates a dictionary of assets to delete.
+        * it only accepts user folder
+        * it only deletes assets of selected basemesh (otherwise updates will be a problem
+        * filetypes allowed: .mhclo, .mhbin, .mhh, .target, .mhm, .bvh, .mhpose, .mhskel
+        """
         self.cart_list_widget.clear()
-        self.installed_assets_cache = []
-        user_data_dir = None
-        
-        try:
-            if self.mh_glob and hasattr(self.mh_glob, 'env'):
-                if hasattr(self.mh_glob.env, 'path_userdata') and self.mh_glob.env.path_userdata:
-                    user_data_dir = self.mh_glob.env.path_userdata
-                elif hasattr(self.mh_glob.env, 'path_user') and self.mh_glob.env.path_user:
-                    user_data_dir = os.path.join(self.mh_glob.env.path_user, "data")
-        except Exception as e:
-            print(f"[mh2_asset_purge] Path read trace error: {e}")
+        self.installed_assets_cache = {}
 
-        if not user_data_dir or not os.path.exists(user_data_dir):
-            fallback_paths = [
-                os.path.expanduser("~/makehuman2/data"),
-                os.path.expanduser("~/Documents/makehuman2/data"),
-                os.path.expanduser("~/.config/makehuman2/data")
-            ]
-            for f_path in fallback_paths:
-                if os.path.exists(f_path):
-                    user_data_dir = f_path
-                    break
+        # we use basename and basefolders and extend them with additional folders
+        #
+        env = self.mh_glob.env
+        basename = env.basename
+        self.categories = env.basefolders
+        self.categories.extend(["target", 'geometries', "skins", "poses", "props", "models"])
 
-        if not user_data_dir:
-            return
+        # without mh_glob.env.path_userdata is given
+        #
+        user_data_dir = env.path_userdata
 
-        categories = ['clothes', 'hair', 'skins', 'eyebrows', 'eyes', 'geometries', 'targets', 'poses', 'props', 'models']
-        for cat in categories:
-            cat_path = os.path.join(user_data_dir, cat)
+        for cat in self.categories:
+            cat_path = os.path.join(user_data_dir, cat, basename)
             if not os.path.exists(cat_path):
                 continue
                 
@@ -102,23 +95,31 @@ class MH2AssetPurgerPanel(QWidget):
                     if "manifest" in file.lower() or file.endswith((".json", ".log", ".pysync")):
                         continue
 
-                    if file.lower().endswith(('.mhclo', '.mhh', '.mhmat', '.target', '.mhm')):
+                    # mhmat files can have different names, so only and the origin is not really visible.
+                    # mhbin works without mhclo, although user assets usually contain a source version as well
+                    #
+                    if file.lower().endswith(('.mhclo', '.mhbin', '.mhh', '.target', '.mhm', '.bvh', '.mhpose', '.mhskel')):
                         asset_name, ext = os.path.splitext(file)
                         full_path = os.path.join(root, file)
-                        
-                        if asset_name not in [a['name'] for a in self.installed_assets_cache]:
-                            self.installed_assets_cache.append({
+
+                        # add asset to list, if not yet there
+                        #
+                        label = f"[{cat.upper()}]  {asset_name}"
+                        if label not in self.installed_assets_cache:
+                            self.installed_assets_cache[label] = {
                                 'name': asset_name,
                                 'category': cat,
                                 'primary_file': full_path,
-                                'parent_folder': root, 
-                                'base_path_no_ext': os.path.join(root, asset_name),
-                                'primary_ext': ext
-                            })
-                            self.cart_list_widget.addItem(f"[{cat.upper()}]  {asset_name}")
+                                'parent_folder': root
+                            }
+                            self.cart_list_widget.addItem(label)
 
+        # sort list, if any
+        #
         if self.cart_list_widget.count() == 0:
             self.cart_list_widget.addItem("No assets found in workspace directory.")
+        else:
+            self.cart_list_widget.sortItems()
 
     def execute_mass_purge_cart(self):
         selected_rows = self.cart_list_widget.selectedIndexes()
@@ -141,45 +142,53 @@ class MH2AssetPurgerPanel(QWidget):
         if msg.clickedButton() == no_btn:
             return
 
+        env = self.mh_glob.env
         purged_count = 0
-        categories = ['clothes', 'hair', 'skins', 'eyebrows', 'eyes', 'geometries', 'targets', 'models']
         categories_to_refresh = set()
-        glob_ctx = self.mh_glob if self.mh_glob else (self.mh_app.glob if self.mh_app else None)
+        base_cls = self.mh_glob.baseClass
 
-        for index in sorted(selected_rows, key=lambda x: x.row(), reverse=True):
-            if index.row() >= len(self.installed_assets_cache):
+        for index in selected_rows:
+            label = index.data()
+            if label not in self.installed_assets_cache:
                 continue
                 
-            asset_data = self.installed_assets_cache[index.row()]
-            primary_file = os.path.abspath(asset_data['primary_file']).lower()
-            parent_folder = asset_data['parent_folder']
-            
-            target_name_lower = asset_data['name'].lower()
+            asset_data = self.installed_assets_cache[label]
+
+            # windows: compare lowercase, all others work different
+            #
+            if env.osindex == 0:
+                primary_file = os.path.abspath(asset_data['primary_file']).lower()
+            else:
+                primary_file = os.path.abspath(asset_data['primary_file'])
+
             categories_to_refresh.add(asset_data['category'])
             
             # --- STEP 1: DROP ASSET FROM THE 3D SCENE ---
-            if self.chk_force_detach.isChecked() and glob_ctx and hasattr(glob_ctx, 'baseClass'):
-                try:
-                    base_cls = glob_ctx.baseClass
-                    if hasattr(base_cls, 'attachedAssets'):
-                        assets_to_detach = []
-                        for attached in base_cls.attachedAssets:
-                            if os.path.abspath(attached.filename).lower() == primary_file:
-                                assets_to_detach.append(attached)
-                        
-                        for live_asset in assets_to_detach:
-                            if hasattr(base_cls, 'detachAsset'):
-                                base_cls.detachAsset(live_asset)
-                            elif hasattr(base_cls, 'detachByFilename'):
-                                base_cls.detachByFilename(live_asset.filename)
-                                
-                    if hasattr(base_cls, 'recomputeMesh'):
-                        base_cls.recomputeMesh()
-                except Exception as ex:
-                    print(f"[mh2_asset_purge] Viewport detach fail: {ex}")
+
+            if self.chk_force_detach.isChecked():
+                base_cls.detachAssetByName(primary_file)
 
             # --- STEP 2: RELEASE HANDLES AND TRASH EXCLUSIVELY ---
-            try:
+
+            parent_folder = asset_data['parent_folder']
+
+            # for mhclo and mhbin files, the whole folder is moved to trash, otherwise texture etc. may stay
+            #
+            if primary_file.lower().endswith(('.mhclo', '.mhbin')):
+                normalized_dir_path = os.path.normpath(parent_folder)
+                normalized_dir_path = os.path.normpath(parent_folder) if env.osindex == 0 else parent_folder
+
+                env.logLine(1, f"[mh2_asset_purge] Removing custom subfolder structure: {normalized_dir_path}")
+                send2trash(normalized_dir_path)
+                purged_count += 1
+            else:
+                # in all other cases check for similar names in parent folder to get meta and thumb files
+                #
+                if env.osindex == 0:
+                    target_name = asset_data['name'].lower()
+                else:
+                    target_name = asset_data['name']
+
                 if os.path.exists(parent_folder):
                     for file in os.listdir(parent_folder):
                         file_path = os.path.join(parent_folder, file)
@@ -190,56 +199,31 @@ class MH2AssetPurgerPanel(QWidget):
                         if "manifest" in file.lower() or file.endswith((".json", ".log")):
                             continue
                         
-                        file_name_no_ext, _ = os.path.splitext(file)
-                        
-                        if file_name_no_ext.lower() == target_name_lower:
-                            # CRITICAL FIXED SEGMENT: Absolute path normalization for Windows/External volume structural parsing
-                            normalized_win_path = os.path.normpath(file_path)
-                            print(f"[mh2_asset_purge] Moving asset layer to Recycle Bin: {normalized_win_path}")
-                            send2trash(normalized_win_path)
+                        if env.osindex == 0:
+                            file_name_no_ext, _ = os.path.splitext(file).lower()
+                            normalized_path = os.path.normpath(file_path)
+                        else:
+                            file_name_no_ext, _ = os.path.splitext(file)
+                            normalized_path = file_path
+
+                        if file_name_no_ext == target_name:
+                            env.logLine(1, f"[mh2_asset_purge] Moving asset layer to Recycle Bin: {normalized_path}")
+                            send2trash(normalized_path)
                             purged_count += 1
-                
-                # Safely trash custom subfolders if they become entirely empty, bypassing main categories
-                if os.path.exists(parent_folder) and not os.listdir(parent_folder):
-                    basename = os.path.basename(parent_folder.rstrip(os.sep))
-                    if basename not in categories:
-                        normalized_dir_path = os.path.normpath(parent_folder)
-                        print(f"[mh2_asset_purge] Removing empty custom subfolder structure: {normalized_dir_path}")
-                        send2trash(normalized_dir_path)
-            except Exception as ex:
-                print(f"[mh2_asset_purge] File trash swap fail: {ex}")
+
 
         # --- STEP 3: CLEAR MEMORY AND NOTIFY DOWNLOADER ---
         gc.collect()
         self.sync_installed_to_cart()
 
         # --- STEP 4: REBUILD GRAPHICS VIEWPORT PANELS ---
-        if glob_ctx:
-            for cat in categories_to_refresh:
-                if hasattr(glob_ctx, 'rescanAssets'):
-                    glob_ctx.rescanAssets(cat)
+        
+        # syncRepositories does the job also to rescan and recreate window
+        #
+        self.mh_glob.MainWindow.syncRepositories(True)
                     
-            if hasattr(glob_ctx, 'openGLWindow') and glob_ctx.openGLWindow:
-                glob_ctx.openGLWindow.update()
-            
-            try:
-                app_ctx = QApplication.instance() or self.mh_app
-                if app_ctx:
-                    for widget in app_ctx.allWidgets():
-                        w_class = widget.metaObject().className() if widget.metaObject() else ""
-                        
-                        if "ImageSelection" in w_class or "PicSelectWidget" in w_class or "PicFlowLayout" in w_class:
-                            if hasattr(widget, 'type') and widget.type in categories_to_refresh:
-                                if hasattr(widget, 'rescanFolder'):
-                                    widget.rescanFolder()
-                            if hasattr(widget, 'layout') and hasattr(widget.layout, 'redisplayWidgets'):
-                                widget.layout.removeAllWidgets()
-                                widget.layout.redisplayWidgets()
-                            elif hasattr(widget, 'redisplayWidgets'):
-                                widget.removeAllWidgets()
-                                widget.redisplayWidgets()
-            except Exception as layout_ex:
-                print(f"[mh2_asset_purge] UI Panel synchronization trace: {layout_ex}")
+        if self.mh_glob.openGLWindow:
+            self.mh_glob.openGLWindow.update()
 
         self.sync_installed_to_cart()
         QMessageBox.information(self, "Purge Complete", f"Successfully moved {purged_count} item files to your Recycle Bin/Trash.")
