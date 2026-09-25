@@ -13,68 +13,68 @@ from PySide6.QtWidgets import (
     QPushButton, QLabel, QListWidget, QMessageBox, QCheckBox, QDockWidget
 )
 
-_purger_panel_instance = None
-_dock_container_instance = None  
-_saved_app_context = None
-_saved_glob_context = None
-
-class MH2AssetPurgerPanel(QWidget):
-    def __init__(self, mh_app=None, mh_glob=None, parent=None):
-        super().__init__(parent)
+class MH2AssetPurgerPanel():
+    def __init__(self, mh_app, mh_glob, pluginname):
         self.mh_app = mh_app
         self.mh_glob = mh_glob
-        self.installed_assets_cache = {}
-        self.setObjectName("MH2AssetPurgerPanel")
-        self.categories = []
-        
-        self.setup_ui()
-        self.sync_installed_to_cart()
+        self.pluginname = pluginname
+        self.mainwindow = self.mh_glob.MainWindow
+        self.repo = self.mh_glob.pluginRepo
+        self.dock = None
+        self.panel = None
 
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        self.installed_assets_cache = {}
+        self.categories = []
+
+    class Panel(QWidget):
+        def __init__(self, parent):
+            super().__init__()
+
+            self.setObjectName("MH2AssetPurgerPanel")
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(8, 8, 8, 8)
+            layout.setSpacing(6)
         
-        title = QLabel("Asset Purger & Recycle Bin Unloader")
-        title.setStyleSheet("font-weight: bold;")
-        layout.addWidget(title)
+            title = QLabel("Asset Purger & Recycle Bin Unloader")
+            title.setStyleSheet("font-weight: bold;")
+            layout.addWidget(title)
         
-        desc = QLabel("Select items below to safely move asset layers to your system Recycle Bin:")
-        desc.setWordWrap(True)
-        layout.addWidget(desc)
+            desc = QLabel("Select items below to safely move asset layers to your system Recycle Bin:")
+            desc.setWordWrap(True)
+            layout.addWidget(desc)
         
-        self.cart_list_widget = QListWidget()
-        self.cart_list_widget.setSelectionMode(QListWidget.MultiSelection)
-        layout.addWidget(self.cart_list_widget)
+            self.cart_list_widget = QListWidget()
+            self.cart_list_widget.setSelectionMode(QListWidget.MultiSelection)
+            layout.addWidget(self.cart_list_widget)
         
-        self.chk_force_detach = QCheckBox("Force drop items from active 3D view before wipe")
-        self.chk_force_detach.setChecked(True)
-        layout.addWidget(self.chk_force_detach)
+            self.chk_force_detach = QCheckBox("Force drop items from active 3D view before wipe")
+            self.chk_force_detach.setChecked(True)
+            layout.addWidget(self.chk_force_detach)
         
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(6)
+            btn_layout = QHBoxLayout()
+            btn_layout.setSpacing(6)
         
-        self.btn_sync = QPushButton("🔄 Sync Inventory")
-        self.btn_sync.clicked.connect(self.sync_installed_to_cart)
-        btn_layout.addWidget(self.btn_sync)
+            self.btn_sync = QPushButton("🔄 Sync Inventory")
+            self.btn_sync.clicked.connect(parent.sync_installed_to_cart)
+            btn_layout.addWidget(self.btn_sync)
         
-        self.btn_purge = QPushButton("🗑️ Move to Trash")
-        self.btn_purge.clicked.connect(self.execute_mass_purge_cart)
-        btn_layout.addWidget(self.btn_purge)
+            self.btn_purge = QPushButton("🗑️ Move to Trash")
+            self.btn_purge.clicked.connect(parent.execute_mass_purge_cart)
+            btn_layout.addWidget(self.btn_purge)
         
-        layout.addLayout(btn_layout)
+            layout.addLayout(btn_layout)
 
     def sync_installed_to_cart(self):
         """
-        sync_installed_to_cart creates a dictionary of assets to delete.
+        sync_installed_to_cart creates a list of assets to delete.
         * it only accepts user folder
         * it only deletes assets of selected basemesh (otherwise updates will be a problem
         * filetypes allowed: .mhclo, .mhbin, .mhh, .target, .mhm, .bvh, .mhpose, .mhskel
         """
-        self.cart_list_widget.clear()
+        self.panel.cart_list_widget.clear()
         self.installed_assets_cache = {}
 
-        # we use basename and basefolders and extend them with additional folders
+        # we use basename and basefoldes and extend them with additional folders
         #
         env = self.mh_glob.env
         basename = env.basename
@@ -112,23 +112,23 @@ class MH2AssetPurgerPanel(QWidget):
                                 'primary_file': full_path,
                                 'parent_folder': root
                             }
-                            self.cart_list_widget.addItem(label)
+                            self.panel.cart_list_widget.addItem(label)
 
         # sort list, if any
         #
-        if self.cart_list_widget.count() == 0:
-            self.cart_list_widget.addItem("No assets found in workspace directory.")
+        if self.panel.cart_list_widget.count() == 0:
+            self.panel.cart_list_widget.addItem("No assets found in workspace directory.")
         else:
-            self.cart_list_widget.sortItems()
+            self.panel.cart_list_widget.sortItems()
 
     def execute_mass_purge_cart(self):
-        selected_rows = self.cart_list_widget.selectedIndexes()
+        selected_rows = self.panel.cart_list_widget.selectedIndexes()
         
-        if not selected_rows or (len(selected_rows) == 1 and self.cart_list_widget.item(0).text().startswith("No assets")):
-            QMessageBox.information(self, "Selection Empty", "Please select items within the data listing matrix first.")
+        if not selected_rows or (len(selected_rows) == 1 and self.panel.cart_list_widget.item(0).text().startswith("No assets")):
+            QMessageBox.information(self.panel, "Selection Empty", "Please select items within the data listing matrix first.")
             return
 
-        msg = QMessageBox(self)
+        msg = QMessageBox(self.panel)
         msg.setIcon(QMessageBox.Question)
         msg.setWindowTitle("Send to Recycle Bin?")
         msg.setText(f"Move these {len(selected_rows)} asset package(s) to the Trash?")
@@ -165,7 +165,7 @@ class MH2AssetPurgerPanel(QWidget):
             
             # --- STEP 1: DROP ASSET FROM THE 3D SCENE ---
 
-            if self.chk_force_detach.isChecked():
+            if self.panel.chk_force_detach.isChecked():
                 base_cls.detachAssetByName(primary_file)
 
             # --- STEP 2: RELEASE HANDLES AND TRASH EXCLUSIVELY ---
@@ -226,55 +226,59 @@ class MH2AssetPurgerPanel(QWidget):
             self.mh_glob.openGLWindow.update()
 
         self.sync_installed_to_cart()
-        QMessageBox.information(self, "Purge Complete", f"Successfully moved {purged_count} item files to your Recycle Bin/Trash.")
+        QMessageBox.information(self.panel, "Purge Complete", f"Successfully moved {purged_count} item files to your Recycle Bin/Trash.")
+
+    def shutdown(self):
+        self.panel.close()
+        self.panel.deleteLater()
+        self.mainwindow.removeDockWidget(self.dock)
+        self.dock.close()
+        self.dock.deleteLater()
+        self.dock = None
+
+    def initialize(self):
+        """
+        the initialize function for this dock panel
+        """
+        if self.pluginname in self.repo:
+            # if loaded second time
+            # Clean up old references just in case
+            self.shutdown()
+
+        self.dock = QDockWidget("Asset Inventory Purger", self.mainwindow)
+        self.dock.setObjectName("mh2_asset_purger_dock_widget")
+        self.dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+
+        # create UI
+        self.panel = self.Panel(self)
+        self.dock.setWidget(self.panel)
+        self.sync_installed_to_cart()
+
+        if hasattr(self.mainwindow, "addDockWidget"):
+            self.mainwindow.addDockWidget(Qt.RightDockWidgetArea, self.dock)
+        else:
+            self.dock.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
+
+        self.dock.show()
+
+        # now add plugin to repository
+        #
+        self.repo[self.pluginname] = self
+        return True
+
 
 # ========================================================
 #  MAKEHUMAN 2 CORE EXTENSION MANAGER MODULE INTEGRATION
 # ========================================================
 
 def load_extension(app, glob):
-    global _purger_panel_instance, _dock_container_instance
-    global _saved_app_context, _saved_glob_context
-    
-    _saved_app_context = QApplication.instance() or app
-    _saved_glob_context = glob
-    
-    if _saved_app_context and _purger_panel_instance is None:
-        main_window = None
-        for widget in _saved_app_context.topLevelWidgets():
-            if isinstance(widget, QMainWindow) or str(widget.objectName()).lower() == "mainwindow":
-                main_window = widget
-                break
+    pluginname = os.path.abspath(__file__)
+    plugin = MH2AssetPurgerPanel(app, glob, pluginname)
+    return plugin.initialize()
 
-        _purger_panel_instance = MH2AssetPurgerPanel(mh_app=app, mh_glob=glob)
-
-        if main_window:
-            _dock_container_instance = QDockWidget("Asset Inventory Purger", main_window)
-            _dock_container_instance.setObjectName("mh2_asset_purger_dock_widget")
-            _dock_container_instance.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
-            _dock_container_instance.setWidget(_purger_panel_instance)
-            main_window.addDockWidget(Qt.RightDockWidgetArea, _dock_container_instance)
-            _dock_container_instance.show()
-        else:
-            _purger_panel_instance.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint)
-            _purger_panel_instance.show()
-        
-    return {"status": "mh2_asset_purger_active"}
-
-
-def unload_extension():
-    global _purger_panel_instance, _dock_container_instance, _saved_app_context, _saved_glob_context
-    
-    if _dock_container_instance is not None:
-        _dock_container_instance.close()
-        _dock_container_instance.deleteLater()
-        _dock_container_instance = None
-        
-    if _purger_panel_instance is not None:
-        _purger_panel_instance.close()
-        _purger_panel_instance.deleteLater()
-        _purger_panel_instance = None
-        
-    _saved_app_context = None
-    _saved_glob_context = None
-    print("[mh2_asset_purge] Extension fully unmounted and workspace memory structure flushed.")
+def unload_extension(glob):
+    pluginname = os.path.abspath(__file__)
+    if pluginname in glob.pluginRepo:
+        glob.pluginRepo[pluginname].shutdown()
+        glob.pluginRepo.pop(pluginname)     # and delete from repo
+        glob.env.logLine(1, "[mh2_asset_purge] Extension fully unmounted and workspace memory structure flushed.")
